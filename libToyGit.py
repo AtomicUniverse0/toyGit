@@ -1,10 +1,10 @@
+from __future__ import annotations
 from configparser import ConfigParser
 import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file
-
+from utils import git_repo_dir, git_repo_file, read_object, hash_object
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -12,6 +12,15 @@ subparser.required = True
 
 sub_init = subparser.add_parser("init", help="初始化一个新的git仓库")
 sub_init.add_argument("path", nargs= "?", default= ".", help = "仓库所在的位置")
+
+sub_cat_file = subparser.add_parser("cat-file", help="显示git对象的内容")
+sub_cat_file.add_argument("type", choices=["blob", "commit", "tree", "tag"], help="对象类型")
+sub_cat_file.add_argument("object_sha1", help="对象的sha1值")
+
+sub_hash_object = subparser.add_parser("hash-object", help="计算文件的sha1值，并将其写入git对象数据库")
+sub_hash_object.add_argument("-w", action="store_true", help="将对象写入git对象数据库")
+sub_hash_object.add_argument("-t", choices=["blob", "commit", "tree", "tag"], default="blob", help="对象类型")
+sub_hash_object.add_argument("path", help="文件路径")
 
 
 class GitRepository:
@@ -63,6 +72,25 @@ class GitRepository:
             config.set("core", "bare", "false")
             config.write(f)
 
+    @staticmethod
+    def find_repo(path=".", required=True) -> GitRepository:
+        path = os.path.realpath(path)
+
+        if os.path.isdir(os.path.join(path, ".git")):
+            return GitRepository(path)
+
+        # 如果没有返回，递归查找父目录
+        parent = os.path.realpath(os.path.join(path, ".."))
+
+        if parent == path:
+            # 找到根目录了，结果还没找到
+            if required:
+                raise Exception("没有 git 目录。")
+            else:
+                return None
+
+        # 递归情况
+        return GitRepository.find_repo(parent, required)
 
 def cmd_init(args) -> None:
     try:
@@ -72,11 +100,31 @@ def cmd_init(args) -> None:
     except RuntimeError as e:
         print(e)
 
+def cmd_cat_file(args) -> None:
+    repo = GitRepository.repo_find()
+    # 暂时只支持blob类型的对象，后续会扩展
+    assert args.type == "blob"
+    blob = read_object(repo.gitdir, args.object_sha1)        
+    print(blob.serialize())
+
+def cmd_hash_object(args) -> None:
+    if args.w:
+        git_repo_path = GitRepository.repo_find().gitdir
+    else:
+        git_repo_path = None
+
+    sha = hash_object(args.path, args.t, git_repo_path)
+    print(sha)
+
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
     match args.command:
         case "init" : 
             cmd_init(args)
+        case "cat-file" :
+            cmd_cat_file(args)
+        case "hash-object":
+            cmd_hash_object(args)
         case _  : 
             print("无效命令。")
 
