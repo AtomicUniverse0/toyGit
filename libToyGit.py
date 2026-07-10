@@ -4,7 +4,7 @@ import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file, read_object, hash_object
+from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -21,6 +21,12 @@ sub_hash_object = subparser.add_parser("hash-object", help="计算文件的sha1�
 sub_hash_object.add_argument("-w", action="store_true", help="将对象写入git对象数据库")
 sub_hash_object.add_argument("-t", choices=["blob", "commit", "tree", "tag"], default="blob", help="对象类型")
 sub_hash_object.add_argument("path", help="文件路径")
+
+sub_log = subparser.add_parser("log", help="显示给定提交的历史。")
+sub_log.add_argument("commit",
+                   default="HEAD",
+                   nargs="?",
+                   help="开始的提交。")
 
 
 class GitRepository:
@@ -101,20 +107,28 @@ def cmd_init(args) -> None:
         print(e)
 
 def cmd_cat_file(args) -> None:
-    repo = GitRepository.repo_find()
-    # 暂时只支持blob类型的对象，后续会扩展
-    assert args.type == "blob"
+    repo = GitRepository.find_repo()
+    # 后续会扩展
+    assert args.type in ["blob", "commit"]
     blob = read_object(repo.gitdir, args.object_sha1)        
     print(blob.serialize())
 
 def cmd_hash_object(args) -> None:
     if args.w:
-        git_repo_path = GitRepository.repo_find().gitdir
+        git_repo_path = GitRepository.find_repo().gitdir
     else:
         git_repo_path = None
 
     sha = hash_object(args.path, args.t, git_repo_path)
     print(sha)
+
+def cmd_log(args) -> None:
+    repo = GitRepository.find_repo()
+
+    print("digraph wyaglog{")
+    print("  node[shape=rect]")
+    log_graphviz(repo.gitdir, args.commit, set())
+    print("}")
 
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
@@ -125,6 +139,8 @@ def main(argv = sys.argv[1:]) -> None:
             cmd_cat_file(args)
         case "hash-object":
             cmd_hash_object(args)
+        case "log":
+            cmd_log(args)
         case _  : 
             print("无效命令。")
 

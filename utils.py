@@ -1,6 +1,7 @@
 import os
 import zlib
 import hashlib
+import collections
 from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob
 
 
@@ -98,3 +99,90 @@ def hash_object(file_path: str, obj_type: str,  git_repo_path: str = None) -> st
 
     sha = write_object(obj, git_repo_path)
     return sha
+
+# 用来将原生的commit对象的字节流解析为一个字典，字典的key是commit对象的属性名，value是对应的属性值
+# commit 对象首先有若干key-value对，最后是提交信息
+def kvlm_parse(raw: bytes, start: int = 0, dct: dict = None) -> dict:
+    if dct is None:
+        dct = collections.OrderedDict()
+
+    space = raw.find(b" ", start) 
+    nextline = raw.find(b"\n", start)
+    assert nextline != start, "Malformed commit object: missing header"
+
+    if space < 0 or nextline < space:
+        # 特殊情况，压根找不到key了，这说明剩下的都是消息
+        dct[None] = raw[start:]
+        return dct
+
+    key = raw[start:space]
+
+    # nextline 不一定是value的结尾，因为一个value可能有多个换行符
+    # 如果一个换行符的下一个字符不是空格，那么才是value的结尾
+    end = nextline
+    while True:
+        # raw 是bytes，所以 raw[i] 是个int，所以要用ord获得" "的int值
+        if raw[end + 1] != ord(" "):
+            break
+        end = raw.find(b"\n", end + 1)
+
+    value = raw[space + 1 : end].replace(b"\n ", b"\n")
+
+    if key in dct:
+        if type(dct[key]) is list:
+            dct[key].append(value)
+        else :
+            dct[key] = [dct[key], value]
+    else:
+        dct[key] = value
+
+    return kvlm_parse(raw, end + 1, dct)
+
+def kvlm_serialize(kvlm: dict) -> bytes:
+    ret = b""
+
+    for key in kvlm.keys():
+        if key is None:
+            continue
+
+        value = kvlm[key]
+        if type(value) is not list:
+            value = [value]
+
+        for v in value:
+            ret += key + b" " + v.replace(b"\n", b"\n ") + b"\n"
+
+    if None in kvlm:
+        ret += kvlm[None] + b"\n"
+
+    return ret
+
+def log_graphviz(git_repo_path: str, sha: str, seen: set) -> None:
+    if sha in seen:
+        return
+    seen.add(sha)
+
+    commit = read_object(git_repo_path, sha)
+    message = commit.kvlm[None].decode("utf8").strip()
+    message = message.replace("\\", "\\\\")
+    message = message.replace("\"", "\\\"")
+
+    if "\n" in message:  # 只保留第一行
+        message = message[:message.index("\n")]
+
+    print("  c_{0} [label=\"{1}: {2}\"]".format(sha, sha[0:7], message))
+    assert commit.fmt == b'commit'
+
+    if b'parent' not in commit.kvlm.keys():
+        # 基本情况：初始提交。
+        return
+
+    parents = commit.kvlm[b'parent']
+
+    if type(parents) is list:
+        parents = list(parents)
+
+    for p in parents:
+        p = p.decode("ascii")
+        print("  c_{0} -> c_{1};".format(sha, p))
+        log_graphviz(git_repo_path, p, seen)

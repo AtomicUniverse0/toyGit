@@ -1,3 +1,5 @@
+from utils import kvlm_parse, kvlm_serialize
+
 
 class GitObject:
     """尝试从 data 初始化一个git对象，如果没有 data，那就调用自己的init"""
@@ -37,13 +39,14 @@ class GitBlob(GitObject):
 
 class GitCommit(GitObject):
     def __init__(self, data: bytes):
-        pass
+        super().__init__(data)
+        self.kvlm = kvlm_parse(data)
 
     def serialize(self) -> bytes:
-        pass
+        return kvlm_serialize(self.kvlm)
 
     def deserialize(self, data: bytes):
-        pass
+        self.kvlm = kvlm_parse(data)
     
     def get_type(self) -> bytes:
         return b"commit"
