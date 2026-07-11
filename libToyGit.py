@@ -4,7 +4,7 @@ import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz
+from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -31,6 +31,11 @@ sub_log.add_argument("commit",
 sub_ls_tree = subparser.add_parser("ls-tree", help="显示给定树对象的内容。")
 sub_ls_tree.add_argument("sha", help="树对象的sha1值")
 sub_ls_tree.add_argument("-r", action="store_true", help="递归显示子树的内容")
+
+# 这是一个简化版的checkout，只会在一个空目录中写入 commit 对应的树
+sub_checkout = subparser.add_parser("checkout", help="检出给定的提交。")
+sub_checkout.add_argument("commit", help="要检出的提交的sha1值")
+sub_checkout.add_argument("path", help="检出到的目录")
 
 
 class GitRepository:
@@ -134,22 +139,13 @@ def cmd_log(args) -> None:
     log_graphviz(repo.gitdir, args.commit, set())
     print("}")
 
-def ls_tree(git_repo_path: str, sha: str, recursive: bool) -> None:
-    obj = read_object(git_repo_path, sha)
-    assert obj.get_type() == b"tree", "对象 {0} 不是一个树对象".format(sha)
-
-    for item in obj.items:
-        # 检查一下 item 的 mode 是否合法
-        assert item.mode in ["40000", "100644", "100755", "120000"], "对象 {0} 的 mode {1} 不合法".format(sha, item.mode) 
-
-        if recursive and item.mode[:5] == "040000":
-            ls_tree(git_repo_path, item.sha, recursive)
-        else:
-            print("{0} {1} {2}\t{3}".format(item.mode, item.sha, item.path, item.path))
-
 def cmd_ls_tree(args) -> None:
     repo = GitRepository.find_repo()
     ls_tree(repo.gitdir, args.sha, args.r)
+
+def cmd_tree_checkout(args) -> None:
+    repo = GitRepository.find_repo()
+    tree_checkout(repo.gitdir, args.commit, args.path)
 
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
@@ -164,6 +160,7 @@ def main(argv = sys.argv[1:]) -> None:
             cmd_log(args)
         case "ls-tree":
             cmd_ls_tree(args)
+        case "checkout":
+            cmd_tree_checkout(args)
         case _  : 
             print("无效命令。")
-

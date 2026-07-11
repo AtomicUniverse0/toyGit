@@ -223,3 +223,38 @@ def tree_serialize(items: list[GitTreeLeaf]) -> bytes:
     for item in items:
         ret += item.mode.encode("ascii") + b" " + item.path.encode("utf-8") + b"\x00" + bytes.fromhex(item.sha)
     return ret
+
+def ls_tree(git_repo_path: str, sha: str, recursive: bool) -> None:
+    obj = read_object(git_repo_path, sha)
+    assert obj.get_type() == b"tree", "对象 {0} 不是一个树对象".format(sha)
+
+    for item in obj.items:
+        # 检查一下 item 的 mode 是否合法
+        assert item.mode in ["40000", "100644", "100755", "120000"], "对象 {0} 的 mode {1} 不合法".format(sha, item.mode) 
+
+        if recursive and item.mode[:5] == "040000":
+            ls_tree(git_repo_path, item.sha, recursive)
+        else:
+            print("{0} {1} {2}\t{3}".format(item.mode, item.sha, item.path, item.path))
+
+def tree_checkout(git_repo_path: str, commit_sha: str, path: str) -> None:
+    commit = read_object(git_repo_path, commit_sha)
+    assert commit.get_type() == b"commit", "对象 {0} 不是一个提交对象".format(commit_sha)
+
+    tree_sha = commit.kvlm[b'tree'].decode("ascii")
+    tree = read_object(git_repo_path, tree_sha)
+    assert tree.get_type() == b"tree", "对象 {0} 不是一个树对象".format(tree_sha)
+
+    for item in tree.items:
+        item_path = os.path.join(path, item.path)
+        if item.mode[:5] == "040000":
+            # 如果是子树，递归调用
+            os.makedirs(item_path, exist_ok=True)
+            tree_checkout(git_repo_path, item.sha, item_path)
+        else:
+            # 如果是文件，写入文件
+            blob = read_object(git_repo_path, item.sha)
+            assert blob.get_type() == b"blob", "对象 {0} 不是一个blob对象".format(item.sha)
+
+            with open(item_path, "wb") as f:
+                f.write(blob.serialize())
