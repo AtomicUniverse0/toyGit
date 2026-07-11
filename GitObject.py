@@ -1,4 +1,4 @@
-from utils import kvlm_parse, kvlm_serialize
+from utils import kvlm_parse, kvlm_serialize, tree_parse, tree_serialize
 
 
 class GitObject:
@@ -38,9 +38,10 @@ class GitBlob(GitObject):
         return b"blob"
 
 class GitCommit(GitObject):
+    kvlm : dict = None
+
     def __init__(self, data: bytes):
         super().__init__(data)
-        self.kvlm = kvlm_parse(data)
 
     def serialize(self) -> bytes:
         return kvlm_serialize(self.kvlm)
@@ -51,17 +52,27 @@ class GitCommit(GitObject):
     def get_type(self) -> bytes:
         return b"commit"
 
+class GitTreeLeaf(object):
+    def __init__(self, mode: str, path: str, sha: str) -> None:
+        self.mode = mode
+        self.path = path
+        self.sha = sha
+
 class GitTree(GitObject):
+    items : list[GitTreeLeaf] = None
+
     def __init__(self, data: bytes):
-        pass
+        super().__init__(data)
 
     def serialize(self) -> bytes:
-        pass
+        return tree_serialize(self.items)
 
     def deserialize(self, data: bytes):
-        pass
+        self.items = tree_parse(data)
+
     def get_type(self) -> bytes:
         return b"tree"
+
 class GitTag(GitObject):
     def __init__(self, data: bytes):
         pass

@@ -2,7 +2,7 @@ import os
 import zlib
 import hashlib
 import collections
-from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob
+from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf
 
 
 """ 如果目录存在，则返回目录的地址，否则返回None """
@@ -186,3 +186,40 @@ def log_graphviz(git_repo_path: str, sha: str, seen: set) -> None:
         p = p.decode("ascii")
         print("  c_{0} -> c_{1};".format(sha, p))
         log_graphviz(git_repo_path, p, seen)
+
+def tree_leaf_parse(raw: bytes, start: int = 0) -> tuple[GitTreeLeaf, int]:
+    # 解析mode
+    space_idx = raw.find(b" ", start)
+    assert space_idx == 6
+    mode = raw[start:space_idx].decode("ascii")
+
+    # 解析path
+    null_idx = raw.find(b"\x00", space_idx)
+    path = raw[space_idx + 1 : null_idx].decode("utf-8")
+
+    # 解析sha
+    sha = raw[null_idx + 1 : null_idx + 21]
+    sha_hex = sha.hex()
+
+    leaf = GitTreeLeaf(mode, path, sha_hex)
+    return leaf, null_idx + 21
+
+def tree_parse(raw: bytes) -> list[GitTreeLeaf]:
+    items = []
+    idx = 0
+    while idx < len(raw):
+        leaf, next_idx = tree_leaf_parse(raw, idx)
+        items.append(leaf)
+        idx = next_idx
+    assert idx == len(raw), "Malformed tree object"
+
+    return items
+
+def tree_serialize(items: list[GitTreeLeaf]) -> bytes:
+    # 需要先对items按path排序
+    items.sort(key=lambda x: x.path)
+
+    ret = b""
+    for item in items:
+        ret += item.mode.encode("ascii") + b" " + item.path.encode("utf-8") + b"\x00" + bytes.fromhex(item.sha)
+    return ret
