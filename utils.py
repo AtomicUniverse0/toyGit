@@ -258,3 +258,36 @@ def tree_checkout(git_repo_path: str, commit_sha: str, path: str) -> None:
 
             with open(item_path, "wb") as f:
                 f.write(blob.serialize())
+
+# 将一个ref解析为sha并返回 
+def resolve_ref(git_repo_path: str, ref_path: str) -> str:
+    with open(ref_path, "r") as f:
+        ref = f.read().strip()
+
+    if ref.startswith("ref:"):
+        # 如果是一个符号引用，递归解析
+        ref = ref[5:]  # 去掉 "ref: "
+        ref_path = git_repo_file(git_repo_path, ref)
+        if ref_path is None:
+            raise Exception("无法解析引用 {0}".format(ref))
+        return resolve_ref(git_repo_path, ref_path)
+    else:
+        # 否则直接返回sha
+        return ref 
+
+# 递归地收集所有的ref
+def collect_refs(git_repo_path: str, path: str = None):
+    assert git_repo_path is not None
+
+    if path is None:
+        path = git_repo_dir(git_repo_path, "refs")
+
+    refs = collections.OrderedDict()
+    for name in sorted( os.listdir(path) ):
+        ref_path = os.path.join(path, name)
+        if os.path.isdir(ref_path):
+            refs[name] = collect_refs(git_repo_path, ref_path)
+        else:
+            refs[name] = resolve_ref(git_repo_path, ref_path)
+
+    return refs

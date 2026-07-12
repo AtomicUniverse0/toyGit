@@ -4,7 +4,7 @@ import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout
+from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout, collect_refs
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -147,6 +147,18 @@ def cmd_tree_checkout(args) -> None:
     repo = GitRepository.find_repo()
     tree_checkout(repo.gitdir, args.commit, args.path)
 
+def print_refs(refs, prefix="") -> None:
+    for name, value in refs.items():
+        if isinstance(value, dict):
+            print_refs(value, prefix + name + "/")
+        else:
+            print("{0}{1} {2}".format(prefix, name, value))
+
+def cmd_show_ref(args) -> None:
+    repo = GitRepository.find_repo()
+    refs = collect_refs(repo.gitdir)
+    print_refs(refs)
+
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
     match args.command:
@@ -162,5 +174,7 @@ def main(argv = sys.argv[1:]) -> None:
             cmd_ls_tree(args)
         case "checkout":
             cmd_tree_checkout(args)
+        case "show-ref":
+            cmd_show_ref(args)
         case _  : 
             print("无效命令。")
