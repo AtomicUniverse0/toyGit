@@ -1,3 +1,5 @@
+import fnmatch
+import os
 from utils import kvlm_parse, kvlm_serialize, tree_parse, tree_serialize
 
 
@@ -114,3 +116,45 @@ class GitIndex(object):
     def __init__(self, version: int = 2, entries: list[GitIndexEntry] = None) -> None:
         self.version = version
         self.entries = entries if entries is not None else []
+
+class GitIgnore(object):
+    absolute : list[list[tuple[str, bool]]] = None # 绝对路径的忽略规则
+    scoped : dict[str, list[tuple[str, bool]]] = None # 作用域路径的忽略规则，key是作用域路径，value是该路径下的忽略规则列表
+
+    def __init__(self, absolute: list[str] = None, scoped: dict[str, list[tuple[str, bool]]] = None) -> None:
+        self.absolute = absolute if absolute is not None else []
+        self.scoped = scoped if scoped is not None else {}
+
+    # 调用方保证 path 一定存在，path 需要是绝对路径
+    # 返回 True 代表被忽略，False 代表不被忽略，None 代表没有path对应的规则
+    def is_ignored(self, path: str) -> bool:
+        #  scoped规则优先于absolute规则
+        result = self.is_scoped_ignored(path)
+        if result is not None:
+            return result
+        return self.is_absolute_ignored(path)
+
+    def path_is_ignored(self, path: str, rules: list[tuple[str, bool]]) -> bool:
+        for rule, is_ignore in rules:
+            if fnmatch.fnmatch(path, rule):
+                return is_ignore
+        return None
+
+    def is_scoped_ignored(self, path: str) -> bool:
+        parent = os.path.dirname(path)
+        while True :
+            if parent in self.scoped:
+                result = self.path_is_ignored(path, self.scoped[parent])
+                if result is not None:
+                    return result
+            parent = os.path.dirname(parent)
+            if parent == "":
+                break
+        return None
+
+    def is_absolute_ignored(self, path: str) -> bool:
+        for rules in self.absolute:
+            result = self.path_is_ignored(path, rules)
+            if result is not None:
+                return result
+        return None

@@ -7,7 +7,7 @@ import math
 import datetime
 import pwd
 import grp
-from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf, GitIndex, GitIndexEntry
+from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf, GitIndex, GitIndexEntry, GitIgnore
 
 
 """ 如果目录存在，则返回目录的地址，否则返回None """
@@ -86,11 +86,12 @@ def write_object(obj: GitObject, git_repo_path: str = None) -> str:
 
     return sha
 
-def hash_object(file_path: str, obj_type: str,  git_repo_path: str = None) -> str:
+# 将 file_path 的文件做成type类型的对象，并计算sha。如果 git_repo_path不为None，则将对象写入git仓库中
+def hash_object(file_path: str, type: str,  git_repo_path: str = None) -> str:
     with open(file_path, "rb") as f:
         data = f.read()
 
-    match obj_type:
+    match type:
         case "blob":
             obj = GitBlob(data)
         case "commit":
@@ -100,7 +101,7 @@ def hash_object(file_path: str, obj_type: str,  git_repo_path: str = None) -> st
         case "tag":
             obj = GitTag(data)
         case _:
-            raise Exception("Unsupported object type: " + obj_type)
+            raise Exception("Unsupported object type: " + type)
 
     sha = write_object(obj, git_repo_path)
     return sha
@@ -242,6 +243,21 @@ def ls_tree(git_repo_path: str, tree: str, recursive: bool) -> None:
             ls_tree(git_repo_path, item.sha, recursive)
         else:
             print("{0} {1} {2}\t{3}".format(item.mode, item.sha, item.path, item.path))
+
+# 一个tree展平成 [path, sha] 的字典
+def tree_to_dict(git_repo_path: str, tree: GitTree, prefix: str = "") -> dict:
+    ret = {}
+
+    for item in tree.items:
+        full_path = prefix + item.path
+        if item.mode[:5] == "040000":
+            sub_tree = read_object(git_repo_path, item.sha)
+            assert sub_tree.get_type() == b"tree", "对象 {0} 不是一个树对象".format(item.sha)
+            ret.update(tree_to_dict(git_repo_path, sub_tree, prefix=full_path + "/"))
+        else:
+            ret[full_path] = item.sha
+
+    return ret
 
 def tree_checkout(git_repo_path: str, commit_sha: str, path: str) -> None:
     commit = read_object(git_repo_path, commit_sha)
@@ -407,7 +423,7 @@ def find_object(git_repo_path: str, name: str, type: str = None, follow: bool = 
             return None
 
 # 读取并解析一个索引文件
-def read_index(git_repo_path: str):
+def read_index(git_repo_path: str) -> GitIndex:
     index_file = git_repo_file(git_repo_path, "index")
 
     # 新仓库没有索引文件！
@@ -516,3 +532,158 @@ def ls_files(git_repo_path: str, show_details: bool) -> None:
             print("  设备：{}, inode: {}".format(entry.dev, entry.ino))
             print("  用户：{} ({})  组：{} ({})".format( pwd.getpwuid(entry.uid).pw_name, entry.uid, grp.getgrgid(entry.gid).gr_name, entry.gid))
             print("  标志：stage={} assume_valid={}".format( entry.flag_stage, entry.flag_assume_valid))
+
+# 解析单个 gitignore 文件的内容，从中提取出所有模式，并附上这模式是否是排除模式的标记（即是否以 ! 开头）。返回一个列表，列表中的每个元素是一个元组，元组的第一个元素是模式字符串，第二个元素是布尔值，表示该模式是否为排除模式。
+def parse_gitignore(lines: list[str]) -> list[tuple[str, bool]]:
+    patterns = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("!"):
+            patterns.append((line[1:], True))
+        elif line.startswith("\\"):
+            patterns.append((line[1:], False))
+        else:
+            patterns.append((line, False))
+    return patterns
+
+def read_gitignoreobj(git_repo_path: str) -> GitIgnore:
+    absolute_patterns = []
+    scoped_patterns = {}
+
+    exclude_file = git_repo_file(git_repo_path, "info/exclude", mkdir=False)
+    if exclude_file and os.path.exists(exclude_file):
+        with open(exclude_file, "r") as f:
+            lines = f.readlines()
+            absolute_patterns.append(parse_gitignore(lines))
+
+    if "XDG_CONFIG_HOME" in os.environ:
+        config_home = os.environ["XDG_CONFIG_HOME"]
+    else:
+        config_home = os.path.expanduser("~/.config")
+    global_file = os.path.join(config_home, "git/ignore")
+
+    if os.path.exists(global_file):
+        with open(global_file, "r") as f:
+            lines = f.readlines()
+            absolute_patterns.append(parse_gitignore(lines))
+
+    gitIndex = read_index(git_repo_path)
+
+    for entry in gitIndex.entries:
+        if(entry.name == ".gitignore" or entry.name.endswith("/.gitignore")):
+            dir_path = os.path.dirname(entry.name)
+            gitignore_path = os.path.join(git_repo_path, dir_path, ".gitignore")
+            assert os.path.exists(gitignore_path)
+
+            with open(gitignore_path, "r") as f:
+                lines = f.readlines()
+                patterns = parse_gitignore(lines)
+                assert dir_path not in scoped_patterns
+                scoped_patterns[dir_path] = patterns
+
+    return GitIgnore(absolute=absolute_patterns, scoped=scoped_patterns)
+
+# 检查path对应的文件是否被忽略
+# 返回 True 代表被忽略，False 代表不被忽略，None 代表没有path对应的规则
+def check_ignore(gitignore: GitIgnore, path: str) -> bool:
+    assert os.path.exists(path) and os.path.isfile(path), "路径 {0} 不存在或不是一个文件".format(path)
+    return gitignore.is_ignored(path)
+
+# 判断当前 HEAD 是否在某个分支上，如果在分支上，则返回该分支的 sha 和 True，否则返回 None 和 False
+def is_on_branch(git_repo_path: str) -> tuple[str, bool]:
+    head_file = git_repo_file(git_repo_path, "HEAD", mkdir=False)
+    assert head_file is not None and os.path.exists(head_file), "HEAD 文件不存在"
+
+    with open(head_file, "r") as f:
+        content = f.read().strip()
+
+    if content.startswith("ref: refs/heads/"):
+        branch = content[16:]
+        return branch, True
+    else:
+        return content, False
+
+def status_on_branch(git_repo_path: str) -> None:
+    # 判断是在分支上，还是在分离头状态
+    branch_sha, on_branch = is_on_branch(git_repo_path)
+    if on_branch:
+        print(f"On branch {branch_sha}")
+    else:
+        print(f"HEAD detached at {branch_sha}")
+
+def status_index_diff_head(git_repo_path: str, index: GitIndex) -> None:
+    print("Changes to be committed:")
+    # 获取当前 HEAD 的 commit 对象
+    head_ref_path = git_repo_file(git_repo_path, "HEAD", mkdir=False)
+    assert head_ref_path is not None and os.path.exists(head_ref_path), "HEAD 文件不存在"
+
+    head_sha = resolve_ref(git_repo_path, head_ref_path)
+    head_commit = read_object(git_repo_path, head_sha)
+    assert head_commit.get_type() == b"commit", "对象 {0} 不是一个提交对象".format(head_sha)
+
+    # 获取当前 HEAD 的 tree 对象
+    head_tree_sha = head_commit.kvlm[b'tree'].decode("ascii")
+    head_tree = read_object(git_repo_path, head_tree_sha)
+    assert head_tree.get_type() == b"tree", "对象 {0} 不是一个树对象".format(head_tree_sha)
+
+    head_tree_dict = tree_to_dict(git_repo_path, head_tree)
+
+    for entry in index.entries: 
+        if entry.name in head_tree_dict:
+            if entry.sha != head_tree_dict[entry.name]:
+                print(f"modified: {entry.name}")
+            
+            del head_tree_dict[entry.name]
+
+        else:
+            print(f"new file: {entry.name}")
+
+    for path in head_tree_dict.keys():
+        print(f"deleted: {path}")
+
+def status_index_diff_worktree(work_tree_path: str, git_repo_path: str, index: GitIndex) -> None:
+    print("Changes not stashed:")
+
+    # 先收集一下除了.git之外的所有文件的路径
+    all_files = []
+    for root, _, files in os.walk(work_tree_path, topdown=True):
+        if root == git_repo_path or os.path.relpath(root, work_tree_path).startswith(".git"):
+            continue
+
+        for file in files:
+            file_path = os.path.join(root, file)
+            relative_path = os.path.relpath(file_path, work_tree_path)
+            all_files.append(relative_path)
+
+    for entry in index.entries:
+
+        if entry.name in all_files:
+            full_path = os.path.join(work_tree_path, entry.name)
+
+            # 比较元数据
+            stat = os.stat(full_path)
+            ctime_ns = entry.ctime[0] * 10**9 + entry.ctime[1]
+            mtime_ns = entry.mtime[0] * 10**9 + entry.mtime[1]
+            if stat.st_ctime_ns != ctime_ns or stat.st_mtime_ns != mtime_ns:
+                # 判断一下内容是否相同
+                sha = hash_object(full_path, "blob")
+                if sha != entry.sha:
+                    print(f"modified: {entry.name}")
+
+            all_files.remove(entry.name)
+        else:
+            print(f"deleted: {entry.name}")
+
+    gitignore_obj = read_gitignoreobj(git_repo_path)
+    gitignore_obj
+
+    ignored = [file for file in all_files if gitignore_obj.is_ignored(file)]
+    not_tracked = [file for file in all_files if not gitignore_obj.is_ignored(file)]
+
+    for file in not_tracked:
+        print(f"not tracked: : {file}")
+
+    for file in ignored:
+        print(f"ignored: {file}")

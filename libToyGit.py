@@ -4,7 +4,9 @@ import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout, collect_refs, create_tag, find_object, ls_files
+from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz
+from utils import ls_tree, tree_checkout, collect_refs, create_tag, find_object, ls_files
+from utils import check_ignore, read_gitignoreobj, read_index, status_on_branch, status_index_diff_head, status_index_diff_worktree
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -52,6 +54,11 @@ sub_rev_parse.add_argument("name", help="引用的名字")
 
 sub_ls_files = subparser.add_parser("ls-files", help="显示索引中的文件列表。")
 sub_ls_files.add_argument("-s", action="store_true", help="显示索引中的文件的详细信息")
+
+sub_check_ignore = subparser.add_parser("check-ignore", help="检查给定的路径是否被忽略。")
+sub_check_ignore.add_argument("paths", nargs="+", help="要检查的路径列表")
+
+sub_status = subparser.add_parser("status", help="显示工作区和索引的状态。")
 
 class GitRepository:
     worktree : str = None
@@ -194,6 +201,26 @@ def cmd_ls_files(args) -> None:
     repo = GitRepository.find_repo()
     ls_files(repo.gitdir, args.s)
 
+def cmd_check_ignore(args) -> None:
+    repo = GitRepository.find_repo()
+    gitIgnore = read_gitignoreobj(repo.gitdir)
+    for path in args.paths:
+        if check_ignore(gitIgnore, path):
+            print(path)
+
+def cmd_status(args) -> None:
+    repo = GitRepository.find_repo()
+
+    status_on_branch(repo.gitdir)
+    print()
+
+    # 查看当前的 index 于 HEAD 的差异，从而得出被修改的文件列表
+    index = read_index(repo.gitdir)
+    status_index_diff_head(repo.gitdir, index)
+    print()
+
+    status_index_diff_worktree(repo.worktree, repo.gitdir, index)
+
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
     match args.command:
@@ -215,5 +242,9 @@ def main(argv = sys.argv[1:]) -> None:
             cmd_tag(args)
         case "rev-parse":
             cmd_rev_parse(args)
+        case "check-ignore":
+            cmd_check_ignore(args)
+        case "status":
+            cmd_status(args)
         case _  : 
             print("无效命令。")
