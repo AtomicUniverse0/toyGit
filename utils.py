@@ -7,6 +7,7 @@ import math
 import datetime
 import pwd
 import grp
+import configparser
 from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf, GitIndex, GitIndexEntry, GitIgnore
 
 
@@ -687,3 +688,229 @@ def status_index_diff_worktree(work_tree_path: str, git_repo_path: str, index: G
 
     for file in ignored:
         print(f"ignored: {file}")
+    
+def index_write(git_repo_path: str, index: str):
+    with open(git_repo_file(git_repo_path, "index"), "wb") as f:
+
+        # 头部
+
+        # 写入魔术字节。
+        f.write(b"DIRC")
+        # 写入版本号。
+        f.write(index.version.to_bytes(4, "big"))
+        # 写入条目数量。
+        f.write(len(index.entries).to_bytes(4, "big"))
+
+        # 条目
+
+        idx = 0
+        for e in index.entries:
+            f.write(e.ctime[0].to_bytes(4, "big"))
+            f.write(e.ctime[1].to_bytes(4, "big"))
+            f.write(e.mtime[0].to_bytes(4, "big"))
+            f.write(e.mtime[1].to_bytes(4, "big"))
+            f.write(e.dev.to_bytes(4, "big"))
+            f.write(e.ino.to_bytes(4, "big"))
+
+            # 模式
+            mode = (e.mode_type << 12) | e.mode_perms
+            f.write(mode.to_bytes(4, "big"))
+
+            f.write(e.uid.to_bytes(4, "big"))
+            f.write(e.gid.to_bytes(4, "big"))
+
+            f.write(e.fsize.to_bytes(4, "big"))
+            # @FIXME 转换回整数。
+            f.write(int(e.sha, 16).to_bytes(20, "big"))
+
+            flag_assume_valid = 0x1 << 15 if e.flag_assume_valid else 0
+
+            name_bytes = e.name.encode("utf8")
+            bytes_len = len(name_bytes)
+            if bytes_len >= 0xFFF:
+                name_length = 0xFFF
+            else:
+                name_length = bytes_len
+
+            # 我们将三个数据片段（两个标志和名称长度）合并到同两个字节中。
+            f.write((flag_assume_valid | e.flag_stage | name_length).to_bytes(2, "big"))
+
+            # 写入名称和最后的 0x00。
+            f.write(name_bytes)
+            f.write((0).to_bytes(1, "big"))
+
+            idx += 62 + len(name_bytes) + 1
+
+            # 如有必要，添加填充。
+            if idx % 8 != 0:
+                pad = 8 - (idx % 8)
+                f.write((0).to_bytes(pad, "big"))
+                idx += pad
+        
+def rm(work_tree_path: str, git_repo_path : str, paths : list[str], delete: bool = True, skip_missing: bool = False):
+    # 查找并读取索引
+    index = read_index(git_repo_path)
+
+    worktree = work_tree_path + os.sep
+
+    # 将路径转换为绝对路径
+    abspaths = list()
+    for path in paths:
+        abspath = os.path.abspath(path)
+        if abspath.startswith(worktree):
+            abspaths.append(abspath)
+        else:
+            raise Exception("无法移除工作树外的路径：{}".format(paths))
+
+    kept_entries = list()
+    remove = list()
+
+    for e in index.entries:
+        full_path = os.path.join(work_tree_path, e.name)
+
+        if full_path in abspaths:
+            remove.append(full_path)
+            abspaths.remove(full_path)
+        else:
+            kept_entries.append(e) # 保留条目
+
+    if len(abspaths) > 0 and skip_missing:
+        raise Exception("无法移除索引中不存在的路径：{}".format(abspaths))
+
+    if delete:
+        for path in remove:
+            os.unlink(path)
+
+    index.entries = kept_entries
+    index_write(git_repo_path, index)
+
+def add(git_repo_path: str, work_tree_path: str, paths: list[str]) -> None:
+
+  # 首先从索引中移除所有路径（如果存在）。
+  rm(work_tree_path, git_repo_path, paths, delete=False, skip_missing=True)
+
+  worktree = work_tree_path + os.sep
+
+  # 将路径转换为对： （绝对路径，相对工作树路径）。
+  # 如果它们在索引中，则也将其删除。
+  clean_paths = list()
+  for path in paths:
+    abspath = os.path.abspath(path)
+    if not (abspath.startswith(worktree) and os.path.isfile(abspath)):
+      raise Exception("不是文件，或不在工作树内：{}".format(paths))
+    relpath = os.path.relpath(abspath, work_tree_path)
+    clean_paths.append((abspath, relpath))
+
+    # 查找并读取索引。它已被 rm 修改。（这不是最优的，但对 wyag 足够了！）
+    #
+    # @FIXME: 我们本可以通过命令移动索引，而不是读取和重新写入它。
+    index = read_index(git_repo_path)
+
+    for (abspath, relpath) in clean_paths:
+        sha = hash_object(abspath, b"blob", git_repo_path)
+
+        stat = os.stat(abspath)
+
+        ctime_s = int(stat.st_ctime)
+        ctime_ns = stat.st_ctime_ns % 10**9
+        mtime_s = int(stat.st_mtime)
+        mtime_ns = stat.st_mtime_ns % 10**9
+
+        entry = GitIndexEntry(ctime=(ctime_s, ctime_ns), mtime=(mtime_s, mtime_ns), dev=stat.st_dev, ino=stat.st_ino,
+                            mode_type=0b1000, mode_perms=0o644, uid=stat.st_uid, gid=stat.st_gid,
+                            fsize=stat.st_size, sha=sha, flag_assume_valid=False,
+                            flag_stage=False, name=relpath)
+        index.entries.append(entry)
+
+    # 将索引写回
+    index_write(git_repo_path, index)
+
+def gitconfig_read():
+    xdg_config_home = os.environ["XDG_CONFIG_HOME"] if "XDG_CONFIG_HOME" in os.environ else "~/.config"
+    configfiles = [
+        os.path.expanduser(os.path.join(xdg_config_home, "git/config")),
+        os.path.expanduser("~/.gitconfig")
+    ]
+
+    config = configparser.ConfigParser()
+    config.read(configfiles)
+    return config
+
+def gitconfig_user_get(config) -> str:
+    if "user" in config:
+        if "name" in config["user"] and "email" in config["user"]:
+            return "{} <{}>".format(config["user"]["name"], config["user"]["email"])
+    return None
+
+def tree_from_index(git_repo_path, index) -> str:
+    contents = dict()
+    contents[""] = list()
+
+    # 枚举条目，并将它们转换为一个字典，其中键是目录，值是目录内容的列表。
+    for entry in index.entries:
+        dirname = os.path.dirname(entry.name)
+
+        # 我们创建所有到根目录 ("") 的字典条目。我们需要它们 *全部*，因为即使一个目录没有文件，它至少会包含一个树。
+        key = dirname
+        while key != "":
+            if key not in contents:
+                contents[key] = list()
+            key = os.path.dirname(key)
+
+        # 暂时将条目存储在列表中。
+        contents[dirname].append(entry)
+
+    # 获取键（即目录）并按长度降序排序。
+    # 这意味着我们总是会在其父目录之前遇到给定路径，这正是我们需要的，因为对于每个目录 D，我们需要修改其父目录 P 以添加 D 的树。
+    sorted_paths = sorted(contents.keys(), key=len, reverse=True)
+
+    # 这个变量将存储当前树的 SHA-1。完成遍历后，它将包含根树的哈希。
+    sha = None
+
+    # 我们遍历排序后的路径列表（字典键）
+    for path in sorted_paths:
+        # 准备一个新的空树对象
+        tree = GitTree()
+
+        # 将每个条目依次添加到我们的新树中
+        for entry in contents[path]:
+            # 条目可以是从索引读取的普通 GitIndexEntry，或者是我们创建的树。
+            if isinstance(entry, GitIndexEntry):  # 普通条目（一个文件）
+
+                # 我们转换模式：条目将其存储为整数，我们需要树的八进制 ASCII 表示。
+                leaf_mode = "{:02o}{:04o}".format(entry.mode_type, entry.mode_perms).encode("ascii")
+                leaf = GitTreeLeaf(mode=leaf_mode, path=os.path.basename(entry.name), sha=entry.sha)
+            else:  # 树。我们将其存储为一对： (basename, SHA)
+                leaf = GitTreeLeaf(mode=b"040000", path=entry[0], sha=entry[1])
+
+            tree.items.append(leaf)
+
+        # 将新的树对象写入存储。
+        sha = write_object(tree, git_repo_path)
+
+        # 将新的树哈希添加到当前字典的父目录，作为一对 (basename, SHA)
+        parent = os.path.dirname(path)
+        base = os.path.basename(path)  # 不带路径的名称，例如 src/main.go 的 main.go
+        contents[parent].append((base, sha))
+
+    return sha
+
+def commit_create(git_repo_path, tree, parent, author, timestamp, message) -> str:
+    commit = GitCommit()  # 创建新的提交对象
+    commit.kvlm[b"tree"] = tree.encode("ascii")
+    if parent:
+        commit.kvlm[b"parent"] = parent.encode("ascii")
+
+    # 格式化时区
+    offset = int(timestamp.astimezone().utcoffset().total_seconds())
+    hours = offset // 3600
+    minutes = (offset % 3600) // 60
+    tz = "{}{:02}{:02}".format("+" if offset > 0 else "-", hours, minutes)
+
+    author = author + timestamp.strftime(" %s ") + tz
+
+    commit.kvlm[b"author"] = author.encode("utf8")
+    commit.kvlm[b"committer"] = author.encode("utf8")
+    commit.kvlm[None] = message.encode("utf8")
+
+    return write_object(commit, git_repo_path)

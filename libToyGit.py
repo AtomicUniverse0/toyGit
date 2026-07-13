@@ -3,10 +3,12 @@ from configparser import ConfigParser
 import argparse
 import sys
 import os
+import datetime
 
 from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz
 from utils import ls_tree, tree_checkout, collect_refs, create_tag, find_object, ls_files
 from utils import check_ignore, read_gitignoreobj, read_index, status_on_branch, status_index_diff_head, status_index_diff_worktree
+from utils import rm, add, tree_from_index, commit_create, gitconfig_read, gitconfig_user_get, is_on_branch
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -59,6 +61,15 @@ sub_check_ignore = subparser.add_parser("check-ignore", help="检查给定的路
 sub_check_ignore.add_argument("paths", nargs="+", help="要检查的路径列表")
 
 sub_status = subparser.add_parser("status", help="显示工作区和索引的状态。")
+
+sub_rm = subparser.add_parser("rm", help="从索引中删除文件。")
+sub_rm.add_argument("paths", nargs="+", help="要删除的文件列表")
+
+sub_add = subparser.add_parser("add", help="将文件添加到索引中。")
+sub_add.add_argument("paths", nargs="+", help="要添加的文件列表")
+
+sub_commit = subparser.add_parser("commit", help="提交索引中的更改。")
+sub_commit.add_argument("-m", "--message", required=True, help="提交信息")
 
 class GitRepository:
     worktree : str = None
@@ -221,6 +232,37 @@ def cmd_status(args) -> None:
 
     status_index_diff_worktree(repo.worktree, repo.gitdir, index)
 
+def cmd_rm(args) -> None:
+    repo = GitRepository.find_repo()
+    rm(repo.worktree, repo.gitdir, args.paths)
+
+def cmd_add(args) -> None:
+    repo = GitRepository.find_repo()
+    add(repo.worktree, repo.gitdir, args.paths)
+
+def cmd_commit(args) -> None:
+    repo = GitRepository.find_repo()
+    index = read_index(repo.gitdir)
+    # 创建树，获取根树的 SHA
+    tree = tree_from_index(repo.gitdir, index)
+
+    # 创建提交对象
+    commit = commit_create(repo.gitdir,
+                           tree,
+                           find_object(repo.gitdir, "HEAD"),
+                           gitconfig_user_get(gitconfig_read()),
+                           datetime.now(),
+                           args.message)
+
+    # 更新 HEAD，使我们的提交成为当前分支的顶端
+    active_branch = is_on_branch(repo.gitdir)
+    if active_branch:  # 如果我们在一个分支上，更新 refs/heads/BRANCH
+        with open(git_repo_file(repo.gitdir, os.path.join("refs/heads", active_branch)), "w") as fd:
+            fd.write(commit + "\n")
+    else:  # 否则，更新 HEAD 本身
+        with open(git_repo_file(repo.gitdir, "HEAD"), "w") as fd:
+            fd.write("\n")
+
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
     match args.command:
@@ -246,5 +288,11 @@ def main(argv = sys.argv[1:]) -> None:
             cmd_check_ignore(args)
         case "status":
             cmd_status(args)
+        case "rm":
+            cmd_rm(args)
+        case "add":
+            cmd_add(args)
+        case "commit":
+            cmd_commit(args)
         case _  : 
             print("无效命令。")
