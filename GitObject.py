@@ -76,3 +76,41 @@ class GitTree(GitObject):
 class GitTag(GitCommit):
     def get_type(self) -> bytes:
         return b"tag"
+
+class GitIndexEntry (object):
+    def __init__(self, ctime=None, mtime=None, dev=None, ino=None,
+                 mode_type=None, mode_perms=None, uid=None, gid=None,
+                 fsize=None, sha=None, flag_assume_valid=None,
+                 flag_stage=None, name=None) -> None:
+      # 文件元数据最后一次更改的时间。 是（秒级时间戳，纳秒级时间戳）的元组
+      self.ctime = ctime
+      # 文件数据最后一次更改的时间。 是（秒级时间戳，纳秒级时间戳）的元组
+      self.mtime = mtime
+      # 包含此文件的设备 ID
+      self.dev = dev
+      # 文件的 inode 编号
+      self.ino = ino
+      # 对象类型，可以是 b1000（常规），b1010（符号链接），b1110（gitlink）
+      self.mode_type = mode_type
+      # 对象权限，整数值。
+      self.mode_perms = mode_perms
+      # 拥有者的用户 ID
+      self.uid = uid
+      # 拥有者的组 ID
+      self.gid = gid
+      # 此对象的大小，以字节为单位
+      self.fsize = fsize
+      # 对象的 SHA
+      self.sha = sha
+      self.flag_assume_valid = flag_assume_valid
+      self.flag_stage = flag_stage
+      # 对象名称（这次是完整路径！）
+      self.name = name
+    
+class GitIndex(object):
+    version : int = None
+    entries : list[GitIndexEntry] = None
+
+    def __init__(self, version: int = 2, entries: list[GitIndexEntry] = None) -> None:
+        self.version = version
+        self.entries = entries if entries is not None else []

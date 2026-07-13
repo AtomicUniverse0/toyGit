@@ -3,7 +3,11 @@ import zlib
 import hashlib
 import collections
 import re
-from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf
+import math
+import datetime
+import pwd
+import grp
+from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf, GitIndex, GitIndexEntry
 
 
 """ 如果目录存在，则返回目录的地址，否则返回None """
@@ -401,3 +405,114 @@ def find_object(git_repo_path: str, name: str, type: str = None, follow: bool = 
             sha = obj.kvlm[b"tree"].decode("ascii")
         else:
             return None
+
+# 读取并解析一个索引文件
+def read_index(git_repo_path: str):
+    index_file = git_repo_file(git_repo_path, "index")
+
+    # 新仓库没有索引文件！
+    if not os.path.exists(index_file):
+        return GitIndex()
+
+    with open(index_file, 'rb') as f:
+        raw = f.read()
+
+    header = raw[:12]
+    signature = header[:4]
+    assert signature == b"DIRC"  # 代表 "DirCache"
+    version = int.from_bytes(header[4:8], "big")
+    assert version == 2, "wyag 仅支持索引文件版本 2"
+    count = int.from_bytes(header[8:12], "big")
+
+    entries = list()
+
+    content = raw[12:]
+    idx = 0
+    for i in range(0, count):
+        # 读取创建时间，作为 UNIX 时间戳（自 1970-01-01 00:00:00 起的秒数）
+        ctime_s = int.from_bytes(content[idx: idx+4], "big")
+        # 读取创建时间，作为该时间戳后的纳秒数，以获得额外的精度
+        ctime_ns = int.from_bytes(content[idx+4: idx+8], "big")
+        # 同样处理修改时间：先是从纪元起的秒数
+        mtime_s = int.from_bytes(content[idx+8: idx+12], "big")
+        # 然后是额外的纳秒数
+        mtime_ns = int.from_bytes(content[idx+12: idx+16], "big")
+        # 设备 ID
+        dev = int.from_bytes(content[idx+16: idx+20], "big")
+        # inode
+        ino = int.from_bytes(content[idx+20: idx+24], "big")
+        # 忽略的字段
+        unused = int.from_bytes(content[idx+24: idx+26], "big")
+        assert 0 == unused
+        mode = int.from_bytes(content[idx+26: idx+28], "big")
+        mode_type = mode >> 12
+        assert mode_type in [0b1000, 0b1010, 0b1110]
+        mode_perms = mode & 0b0000000111111111
+        # 用户 ID
+        uid = int.from_bytes(content[idx+28: idx+32], "big")
+        # 组 ID
+        gid = int.from_bytes(content[idx+32: idx+36], "big")
+        # 大小
+        fsize = int.from_bytes(content[idx+36: idx+40], "big")
+        # SHA，对象 ID。我们将其存储为小写的十六进制字符串，以保持一致性
+        sha = format(int.from_bytes(content[idx+40: idx+60], "big"), "040x")
+        # 我们将忽略的标志
+        flags = int.from_bytes(content[idx+60: idx+62], "big")
+        # 解析标志
+        flag_assume_valid = (flags & 0b1000000000000000) != 0
+        flag_extended = (flags & 0b0100000000000000) != 0
+        assert not flag_extended
+        flag_stage = flags & 0b0011000000000000
+        # 名称的长度。这是以 12 位存储的，最大值为 0xFFF，4095。由于名称有时可能超过该长度，git 将 0xFFF 视为表示至少 0xFFF，并寻找最终的 0x00 以找到名称的结束——这会带来小而可能非常罕见的性能损失。
+        name_length = flags & 0b0000111111111111
+
+        # 到目前为止我们已经读取了 62 字节。
+        idx += 62
+
+        if name_length < 0xFFF:
+            assert content[idx + name_length] == 0x00
+            raw_name = content[idx:idx+name_length]
+            idx += name_length + 1
+        else:
+            print("注意：名称长度为 0x{:X} 字节。".format(name_length))
+            # 这可能没有经过足够的测试。它适用于长度恰好为 0xFFF 字节的路径。任何额外字节可能会在 git、我的 shell 和我的文件系统之间造成问题。
+            null_idx = content.find(b'\x00', idx + 0xFFF)
+            raw_name = content[idx:null_idx]
+            idx = null_idx + 1
+
+        # 将名称解析为 UTF-8
+        name = raw_name.decode("utf8")
+
+        # 数据按 8 字节的倍数填充以进行指针对齐，因此我们跳过需要的字节，以便下次读取从正确的位置开始。
+        idx = 8 * math.ceil(idx / 8)
+
+        # 然后我们将此条目添加到我们的列表中。
+        entries.append(GitIndexEntry(ctime=(ctime_s, ctime_ns),
+                                     mtime=(mtime_s, mtime_ns),
+                                     dev=dev,
+                                     ino=ino,
+                                     mode_type=mode_type,
+                                     mode_perms=mode_perms,
+                                     uid=uid,
+                                     gid=gid,
+                                     fsize=fsize,
+                                     sha=sha,
+                                     flag_assume_valid=flag_assume_valid,
+                                     flag_stage=flag_stage,
+                                     name=name))
+
+    return GitIndex(version=version, entries=entries)
+
+def ls_files(git_repo_path: str, show_details: bool) -> None:
+    index = read_index(git_repo_path)
+
+    for entry in index.entries:
+        print(entry.name)
+
+        if show_details:
+            print("  {}，权限：{:o}".format({ 0b1000: "常规文件", 0b1010: "符号链接",0b1110: "git 链接" }[entry.mode_type], entry.mode_perms))
+            print("  对应的 blob: {}".format(entry.sha))
+            print("  创建时间：{}.{}, 修改时间：{}.{}".format( datetime.fromtimestamp(entry.ctime[0]), entry.ctime[1], datetime.fromtimestamp(entry.mtime[0]), entry.mtime[1]))
+            print("  设备：{}, inode: {}".format(entry.dev, entry.ino))
+            print("  用户：{} ({})  组：{} ({})".format( pwd.getpwuid(entry.uid).pw_name, entry.uid, grp.getgrgid(entry.gid).gr_name, entry.gid))
+            print("  标志：stage={} assume_valid={}".format( entry.flag_stage, entry.flag_assume_valid))

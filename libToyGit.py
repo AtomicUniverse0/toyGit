@@ -4,7 +4,7 @@ import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout, collect_refs, create_tag, find_object
+from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout, collect_refs, create_tag, find_object, ls_files
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -49,6 +49,10 @@ sub_tag.add_argument("object", nargs="?", help="标签指向的对象，如果�
 sub_rev_parse = subparser.add_parser("rev-parse", help="解析给定的引用，输出对应的sha1值。")
 sub_rev_parse.add_argument("--wyag-type", metavar = "type", dest = "type", default = None, choices=["blob", "commit", "tree", "tag"], help="指定引用的类型")
 sub_rev_parse.add_argument("name", help="引用的名字")
+
+sub_ls_files = subparser.add_parser("ls-files", help="显示索引中的文件列表。")
+sub_ls_files.add_argument("-s", action="store_true", help="显示索引中的文件的详细信息")
+
 class GitRepository:
     worktree : str = None
     gitdir : str= None
@@ -185,6 +189,10 @@ def cmd_rev_parse(args) -> None:
     repo = GitRepository.find_repo()
     sha = find_object(repo.gitdir, args.name, args.type)
     print(sha)
+
+def cmd_ls_files(args) -> None:
+    repo = GitRepository.find_repo()
+    ls_files(repo.gitdir, args.s)
 
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
