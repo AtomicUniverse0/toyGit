@@ -4,7 +4,7 @@ import argparse
 import sys
 import os
 
-from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout, collect_refs
+from utils import git_repo_dir, git_repo_file, read_object, hash_object, log_graphviz, ls_tree, tree_checkout, collect_refs, create_tag, find_object
 
 parser = argparse.ArgumentParser(description="Toy Git")
 subparser = parser.add_subparsers(title = "Commands", dest= "command")
@@ -29,7 +29,7 @@ sub_log.add_argument("commit",
                    help="开始的提交。")
 
 sub_ls_tree = subparser.add_parser("ls-tree", help="显示给定树对象的内容。")
-sub_ls_tree.add_argument("sha", help="树对象的sha1值")
+sub_ls_tree.add_argument("tree", help="树对象，可以是引用，也可以是哈希")
 sub_ls_tree.add_argument("-r", action="store_true", help="递归显示子树的内容")
 
 # 这是一个简化版的checkout，只会在一个空目录中写入 commit 对应的树
@@ -37,7 +37,18 @@ sub_checkout = subparser.add_parser("checkout", help="检出给定的提交。")
 sub_checkout.add_argument("commit", help="要检出的提交的sha1值")
 sub_checkout.add_argument("path", help="检出到的目录")
 
+# 简化版的tag命令。 
+# toyGit tag 展示所有的标签
+# toyGit tag name [object] 创建一个新的简易标签，指向给定的对象，如果没有指定对象，则指向当前的HEAD
+# toyGit tag -a name [object] 创建一个新的标签对象，附注内容从标准输入读取
+sub_tag = subparser.add_parser("tag", help="创建一个新的标签，或者显示所有的标签。")
+sub_tag.add_argument("-a", action="store_true", help="创建一个附注标签")
+sub_tag.add_argument("name", nargs="?", help="标签的名字")
+sub_tag.add_argument("object", nargs="?", help="标签指向的对象，如果没有指定，则指向当前的HEAD")
 
+sub_rev_parse = subparser.add_parser("rev-parse", help="解析给定的引用，输出对应的sha1值。")
+sub_rev_parse.add_argument("--wyag-type", metavar = "type", dest = "type", default = None, choices=["blob", "commit", "tree", "tag"], help="指定引用的类型")
+sub_rev_parse.add_argument("name", help="引用的名字")
 class GitRepository:
     worktree : str = None
     gitdir : str= None
@@ -119,7 +130,7 @@ def cmd_cat_file(args) -> None:
     repo = GitRepository.find_repo()
     # 后续会扩展
     assert args.type in ["blob", "commit"]
-    blob = read_object(repo.gitdir, args.object_sha1)        
+    blob = read_object(repo.gitdir, find_object(repo.gitdir, args.object_sha1) )        
     print(blob.serialize())
 
 def cmd_hash_object(args) -> None:
@@ -147,17 +158,33 @@ def cmd_tree_checkout(args) -> None:
     repo = GitRepository.find_repo()
     tree_checkout(repo.gitdir, args.commit, args.path)
 
-def print_refs(refs, prefix="") -> None:
+def print_refs(refs, prefix="", with_sha = True) -> None:
     for name, value in refs.items():
         if isinstance(value, dict):
             print_refs(value, prefix + name + "/")
         else:
-            print("{0}{1} {2}".format(prefix, name, value))
+            msg = "{0}{1} {2}".format(prefix, name, value) if with_sha else "{0}{1}".format(prefix, name)
+            print(msg)
 
 def cmd_show_ref(args) -> None:
     repo = GitRepository.find_repo()
     refs = collect_refs(repo.gitdir)
     print_refs(refs)
+
+def cmd_tag(args) -> None:
+    repo = GitRepository.find_repo()
+
+    if args.name is None:
+        # 展示所有的标签
+        refs = collect_refs(repo.gitdir, os.path.join(repo.gitdir, "refs", "tags"))
+        print_refs(refs, with_sha=False)
+    else:
+        create_tag(repo.gitdir, args.name, args.object, args.a)
+
+def cmd_rev_parse(args) -> None:
+    repo = GitRepository.find_repo()
+    sha = find_object(repo.gitdir, args.name, args.type)
+    print(sha)
 
 def main(argv = sys.argv[1:]) -> None:
     args = parser.parse_args(argv)
@@ -176,5 +203,9 @@ def main(argv = sys.argv[1:]) -> None:
             cmd_tree_checkout(args)
         case "show-ref":
             cmd_show_ref(args)
+        case "tag":
+            cmd_tag(args)
+        case "rev-parse":
+            cmd_rev_parse(args)
         case _  : 
             print("无效命令。")

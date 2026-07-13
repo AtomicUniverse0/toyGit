@@ -12,14 +12,14 @@ class GitObject:
     def serialize(self) -> bytes:
         raise NotImplementedError
     
-    def get_type(self) -> str:
+    def get_type(self) -> bytes:
         raise NotImplementedError
 
     def deserialize(self, data: bytes):
         raise NotImplementedError
 
-    def init():
-        pass
+    def init(self) -> None:
+        raise NotImplementedError
 
 class GitBlob(GitObject):
     blobData : bytes = None
@@ -73,15 +73,6 @@ class GitTree(GitObject):
     def get_type(self) -> bytes:
         return b"tree"
 
-class GitTag(GitObject):
-    def __init__(self, data: bytes):
-        pass
-
-    def serialize(self) -> bytes:
-        pass
-
-    def deserialize(self, data: bytes):
-        pass
-
+class GitTag(GitCommit):
     def get_type(self) -> bytes:
         return b"tag"

@@ -2,6 +2,7 @@ import os
 import zlib
 import hashlib
 import collections
+import re
 from GitObject import GitObject, GitCommit, GitTree, GitTag, GitBlob, GitTreeLeaf
 
 
@@ -224,7 +225,8 @@ def tree_serialize(items: list[GitTreeLeaf]) -> bytes:
         ret += item.mode.encode("ascii") + b" " + item.path.encode("utf-8") + b"\x00" + bytes.fromhex(item.sha)
     return ret
 
-def ls_tree(git_repo_path: str, sha: str, recursive: bool) -> None:
+def ls_tree(git_repo_path: str, tree: str, recursive: bool) -> None:
+    sha = find_object(git_repo_path, tree, type="tree")
     obj = read_object(git_repo_path, sha)
     assert obj.get_type() == b"tree", "对象 {0} 不是一个树对象".format(sha)
 
@@ -291,3 +293,111 @@ def collect_refs(git_repo_path: str, path: str = None):
             refs[name] = resolve_ref(git_repo_path, ref_path)
 
     return refs
+
+def create_tag(git_repo_path: str, tag_name: str, object_sha: str, create_tag_object: bool) -> None:
+    if object_sha is None:
+        # 如果没有指定对象，则指向当前的HEAD
+        head_ref_path = git_repo_file(git_repo_path, "HEAD")
+        if head_ref_path is None:
+            raise Exception("无法解析引用 HEAD")
+        object_sha = resolve_ref(git_repo_path, head_ref_path)
+
+    if create_tag_object:
+        # 创建一个tag对象
+        tag = GitTag(b"")
+        tag.kvlm = collections.OrderedDict()
+        tag.kvlm[b"object"] = object_sha.encode("ascii")
+        tag.kvlm[b"type"] = b"commit"
+        tag.kvlm[b"tag"] = tag_name.encode("utf-8")
+        tag.kvlm[b"tagger"] = b"ToyGit <toygit@example.com>"
+        tag.kvlm[None] = b"create automatic tag by ToyGit"
+
+        # 写入对象数据库
+        tag_sha = hash_object(git_repo_path, tag.serialize(), "tag", write=True)
+
+        # 更新refs/tags
+        tag_ref_path = git_repo_file(git_repo_path, "refs", "tags", tag_name, mkdir=True)
+        with open(tag_ref_path, "w") as f:
+            f.write(tag_sha + "\n")
+    else:
+        tag_ref_path = git_repo_file(git_repo_path, "refs", "tags", tag_name, mkdir=True)
+        with open(tag_ref_path, "w") as f:
+            f.write(object_sha + "\n")
+
+def resolve_object(git_repo_path: str, name: str)-> list[str]:
+    """将名称解析为 repo 中的对象哈希。
+
+    此函数支持：
+    - HEAD 字面量
+    - 短哈希和长哈希
+    - 标签
+    - 分支
+    - 远程分支
+    """
+
+    candidates = list()
+    hashRE = re.compile(r"^[0-9A-Fa-f]{4,40}$")
+
+    # 空字符串？终止。
+    if not name.strip():
+        return None
+
+    # 是Head?
+    if name == "HEAD":
+        return [ resolve_ref(git_repo_path, git_repo_file(git_repo_path, "HEAD")) ]
+
+    # 如果是十六进制字符串，尝试查找哈希。
+    if hashRE.match(name):
+        # 这可能是一个哈希，可能是短的或完整的。4 是 Git 认为某个东西是短哈希的最小长度。
+        # 这个限制在 man git-rev-parse 中有说明。
+        name = name.lower()
+        prefix = name[0:2]
+        path = git_repo_dir(git_repo_path, "objects", prefix, mkdir=False)
+        if path:
+            rem = name[2:]
+            for f in os.listdir(path):
+                if f.startswith(rem):
+                    # 注意字符串的 startswith() 本身适用于完整哈希。
+                    candidates.append(prefix + f)
+
+    # 尝试查找引用。
+    as_tag = resolve_ref(git_repo_path, "refs/tags/" + name)
+    if as_tag:  # 找到了标签吗？
+        candidates.append(as_tag)
+
+    as_branch = resolve_ref(git_repo_path, "refs/heads/" + name)
+    if as_branch:  # 找到了分支吗？
+        candidates.append(as_branch)
+
+    return candidates
+
+# name 可能是各种形式的名称，find_object负责将这些 name 转化为对象的 sha1
+def find_object(git_repo_path: str, name: str, type: str = None, follow: bool = True) -> str:
+    candidates = resolve_object(git_repo_path, name)
+    
+    if len(candidates) == 0:
+        raise Exception("无法解析对象 {0}".format(name))
+
+    if len(candidates) > 1:
+        raise Exception("对象 {0} 不唯一，候选对象有: {1}".format(name, candidates))
+
+    sha = candidates[0]
+
+    if type is None:
+        return sha
+
+    while True:
+        obj = read_object(git_repo_path, sha)
+
+        if obj.get_type() == type.encode("ascii"):
+            return sha
+
+        if not follow:
+            return None
+
+        if obj.get_type() == b"tag":
+            sha = obj.kvlm[b"object"].decode("ascii")
+        elif obj.get_type() == b"commit" and type == "tree":
+            sha = obj.kvlm[b"tree"].decode("ascii")
+        else:
+            return None
